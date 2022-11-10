@@ -53,6 +53,9 @@
 #define Avg_Slope .0025
 #define V25 0.76
 
+//==========MATH==========//
+#define numberOfIterations 256 //how many times moving average will be performed
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -64,6 +67,8 @@
 ADC_HandleTypeDef hadc1;
 
 I2C_HandleTypeDef hi2c1;
+
+TIM_HandleTypeDef htim14;
 
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
@@ -79,6 +84,7 @@ static void MX_I2C1_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_TIM14_Init(void);
 /* USER CODE BEGIN PFP */
 
 //==========ACELEROMETRO==========//
@@ -96,6 +102,9 @@ void Nextion_Sendfloat  (char *ID,float var);
 
 //==========OPERATION==========//
 void updateDisplay(void);
+
+//==========MATH==========//
+long moving_average(float content, const int n);
 
 /* USER CODE END PFP */
 
@@ -155,10 +164,11 @@ void MPU6050_Read_Accel (void)
 	Accel_Y_RAW = (int16_t)(Rec_Data[2] << 8 | Rec_Data [3]);
 	Accel_Z_RAW = (int16_t)(Rec_Data[4] << 8 | Rec_Data [5]);
 
-	MPU6050.ax = Accel_X_RAW/16384.0;
-	MPU6050.ay = Accel_Y_RAW/16384.0;
-	MPU6050.az = Accel_Z_RAW/16384.0;
+	MPU6050.ax = ((float)Accel_X_RAW/16384.0)*10;
+	MPU6050.ay = ((float)Accel_Y_RAW/16384.0)*10;
+	MPU6050.az = ((float)Accel_Z_RAW/16384.0)*10;
 
+	//MPU6050.ax = moving_average(MPU6050.ax, numberOfIterations);
 }
 
 
@@ -176,9 +186,9 @@ void MPU6050_Read_Gyro  (void)
 	Gyro_Y_RAW = (int16_t)(Rec_Data[2] << 8 | Rec_Data [3]);
 	Gyro_Z_RAW = (int16_t)(Rec_Data[4] << 8 | Rec_Data [5]);
 
-	MPU6050.gx = (Gyro_X_RAW/131.0)*100;
-	MPU6050.gy = (Gyro_Y_RAW/131.0)*100;
-	MPU6050.gz = (Gyro_Z_RAW/131.0)*100;
+	MPU6050.gx = (float)Gyro_X_RAW/131.0;
+	MPU6050.gy = (float)Gyro_Y_RAW/131.0;
+	MPU6050.gz = (float)Gyro_Z_RAW/131.0;
 
 }
 
@@ -240,10 +250,48 @@ float ADC_Select_CHTemp(void)
 
 void updateDisplay(void)
 {
+	Nextion_Sendfloat("ax", MPU6050.ax);
+	Nextion_Sendfloat("ay", MPU6050.ay);
+	Nextion_Sendfloat("az", MPU6050.az);
 
+	Nextion_Sendfloat("gx", MPU6050.gx);
+	Nextion_Sendfloat("gy", MPU6050.gy);
+	Nextion_Sendfloat("gz", MPU6050.gz);
 
-
+	Nextion_Sendfloat("temp", ADC_Select_CHTemp());
 }
+
+long moving_average(float content, const int n)
+{
+	long acc = 0;
+	static int  numbersAx[numberOfIterations],
+				numbersAy[numberOfIterations],
+				numbersAz[numberOfIterations];
+
+	for(int i= n-1; i>0; i--) numbersAx[i] = numbersAx[i-1];
+
+	numbersAx[0] = content;
+
+	for(int i=0; i<n; i++) acc += numbersAx[i];
+
+	return acc/n;
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+	if(htim==&htim14)
+	{
+		MPU6050_Read_Accel();
+		MPU6050_Read_Gyro();
+
+		updateDisplay();
+
+		HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+		HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
+
+	}
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -278,9 +326,11 @@ int main(void)
   MX_ADC1_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
+  MX_TIM14_Init();
   /* USER CODE BEGIN 2 */
 
   MPU6050_Init();
+  HAL_TIM_Base_Start_IT(&htim14);
 
   /* USER CODE END 2 */
 
@@ -296,12 +346,14 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+/*
+	MPU6050_Read_Accel();
+	MPU6050_Read_Gyro();
 
-	//MPU6050_Read_Accel();
-	//MPU6050_Read_Gyro();
+	updateDisplay();
 
 	HAL_Delay(100);
-
+*/
   }
   /* USER CODE END 3 */
 }
@@ -328,7 +380,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 4;
-  RCC_OscInitStruct.PLL.PLLN = 144;
+  RCC_OscInitStruct.PLL.PLLN = 168;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 6;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
@@ -345,7 +397,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
   {
     Error_Handler();
   }
@@ -372,7 +424,7 @@ static void MX_ADC1_Init(void)
   /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = DISABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
@@ -434,6 +486,37 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief TIM14 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM14_Init(void)
+{
+
+  /* USER CODE BEGIN TIM14_Init 0 */
+
+  /* USER CODE END TIM14_Init 0 */
+
+  /* USER CODE BEGIN TIM14_Init 1 */
+
+  /* USER CODE END TIM14_Init 1 */
+  htim14.Instance = TIM14;
+  htim14.Init.Prescaler = 16800-1;
+  htim14.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim14.Init.Period = 1000-1;
+  htim14.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim14.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim14) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM14_Init 2 */
+
+  /* USER CODE END TIM14_Init 2 */
 
 }
 
@@ -510,11 +593,23 @@ static void MX_USART2_UART_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOF, LED2_Pin|LED1_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : LED2_Pin LED1_Pin */
+  GPIO_InitStruct.Pin = LED2_Pin|LED1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
 
 }
 
