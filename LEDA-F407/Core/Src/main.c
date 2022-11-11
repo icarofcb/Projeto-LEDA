@@ -440,6 +440,9 @@ void updateDisplay(void)
 	//Nextion_Sendfloat("gy", average.gy);
 	//Nextion_Sendfloat("gz", average.gz);
 
+	Nextion_SendInt("lat", GPS.dec_latitude);
+	Nextion_SendInt("long", GPS.dec_longitude);
+
 	Nextion_Sendfloat("temp", ADC_Select_CHTemp());
 }
 
