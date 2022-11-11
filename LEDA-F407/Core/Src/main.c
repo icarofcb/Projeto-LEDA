@@ -54,7 +54,7 @@
 #define V25 0.76
 
 //==========MATH==========//
-#define numberOfIterations 256 //how many times moving average will be performed
+#define numberOfIterations 10 //how many times moving average will be performed
 
 /* USER CODE END PD */
 
@@ -88,7 +88,7 @@ static void MX_TIM14_Init(void);
 /* USER CODE BEGIN PFP */
 
 //==========ACELEROMETRO==========//
-void  MPU6050_Init	 	(void);
+void MPU6050_Init	 	(void);
 void MPU6050_Read_Gyro  (void);
 void MPU6050_Read_Accel (void);
 
@@ -104,7 +104,17 @@ void Nextion_Sendfloat  (char *ID,float var);
 void updateDisplay(void);
 
 //==========MATH==========//
-long moving_average(float content, const int n);
+//long moving_average(float content, const int n);
+float mvAx(float content, const int n);
+float mvAy(float content, const int n);
+float mvAz(float content, const int n);
+
+float mvGx(float content, const int n);
+float mvGy(float content, const int n);
+float mvGz(float content, const int n);
+
+//==========MCU==========//
+void invertLed(void);
 
 /* USER CODE END PFP */
 
@@ -122,6 +132,9 @@ typedef struct acelerometro
 } acelerometro;
 
 volatile acelerometro MPU6050;
+volatile acelerometro average;
+
+
 
 //==========ACELEROMETRO==========//
 
@@ -168,7 +181,10 @@ void MPU6050_Read_Accel (void)
 	MPU6050.ay = ((float)Accel_Y_RAW/16384.0)*10;
 	MPU6050.az = ((float)Accel_Z_RAW/16384.0)*10;
 
-	//MPU6050.ax = moving_average(MPU6050.ax, numberOfIterations);
+	average.ax = mvAx(MPU6050.ax, numberOfIterations);
+	average.ay = mvAy(MPU6050.ay, numberOfIterations);
+	average.az = mvAy(MPU6050.az, numberOfIterations);
+
 }
 
 
@@ -189,6 +205,10 @@ void MPU6050_Read_Gyro  (void)
 	MPU6050.gx = (float)Gyro_X_RAW/131.0;
 	MPU6050.gy = (float)Gyro_Y_RAW/131.0;
 	MPU6050.gz = (float)Gyro_Z_RAW/131.0;
+
+	//average.gx = mvGx(MPU6050.gx, numberOfIterations);
+	//average.gy = mvGy(MPU6050.gy, numberOfIterations);
+	//average.gz = mvGy(MPU6050.gz, numberOfIterations);
 
 }
 
@@ -220,6 +240,23 @@ void Nextion_Sendfloat(char *ID,float var)
 	Nextion_SendString(ID,buf);
 }
 
+void updateDisplay(void)
+{
+	Nextion_Sendfloat("ax", average.ax);
+	Nextion_Sendfloat("ay", average.ay);
+	Nextion_Sendfloat("az", average.az);
+
+	Nextion_Sendfloat("gx", MPU6050.gx);
+	Nextion_Sendfloat("gy", MPU6050.gy);
+	Nextion_Sendfloat("gz", MPU6050.gz);
+
+	//Nextion_Sendfloat("gx", average.gx);
+	//Nextion_Sendfloat("gy", average.gy);
+	//Nextion_Sendfloat("gz", average.gz);
+
+	Nextion_Sendfloat("temp", ADC_Select_CHTemp());
+}
+
 //==========TEMP==========//
 
 float ADC_Select_CHTemp(void)
@@ -248,33 +285,104 @@ float ADC_Select_CHTemp(void)
 	return Temp;
 }
 
-void updateDisplay(void)
+//==========MATH==========//
+
+float mvAx(float content, const int n)
 {
-	Nextion_Sendfloat("ax", MPU6050.ax);
-	Nextion_Sendfloat("ay", MPU6050.ay);
-	Nextion_Sendfloat("az", MPU6050.az);
+	float acc = 0;
 
-	Nextion_Sendfloat("gx", MPU6050.gx);
-	Nextion_Sendfloat("gy", MPU6050.gy);
-	Nextion_Sendfloat("gz", MPU6050.gz);
+	static float  numbersAx[numberOfIterations];
 
-	Nextion_Sendfloat("temp", ADC_Select_CHTemp());
-}
-
-long moving_average(float content, const int n)
-{
-	long acc = 0;
-	static int  numbersAx[numberOfIterations],
-				numbersAy[numberOfIterations],
-				numbersAz[numberOfIterations];
-
-	for(int i= n-1; i>0; i--) numbersAx[i] = numbersAx[i-1];
+	for(int i= n-1; i>0; i--) numbersAx[i] = numbersAx[i-1]; //pay attention to n-1
 
 	numbersAx[0] = content;
 
 	for(int i=0; i<n; i++) acc += numbersAx[i];
 
 	return acc/n;
+}
+
+float mvAy(float content, const int n)
+{
+	float acc = 0;
+
+	static float  numbersAy[numberOfIterations];
+
+	for(int i= n-1; i>0; i--) numbersAy[i] = numbersAy[i-1]; //pay attention to n-1
+
+	numbersAy[0] = content;
+
+	for(int i=0; i<n; i++) acc += numbersAy[i];
+
+	return acc/n;
+}
+
+float mvAz(float content, const int n)
+{
+	float acc = 0;
+
+	static float  numbersAz[numberOfIterations];
+
+	for(int i= n-1; i>0; i--) numbersAz[i] = numbersAz[i-1]; //pay attention to n-1
+
+	numbersAz[0] = content;
+
+	for(int i=0; i<n; i++) acc += numbersAz[i];
+
+	return acc/n;
+}
+
+float mvGx(float content, const int n)
+{
+	float acc = 0;
+
+	static float  numbersGx[numberOfIterations];
+
+	for(int i= n-1; i>0; i--) numbersGx[i] = numbersGx[i-1]; //pay attention to n-1
+
+	numbersGx[0] = content;
+
+	for(int i=0; i<n; i++) acc += numbersGx[i];
+
+	return acc/n;
+}
+
+float mvGy(float content, const int n)
+{
+	float acc = 0;
+
+	static float  numbersGy[numberOfIterations];
+
+	for(int i= n-1; i>0; i--) numbersGy[i] = numbersGy[i-1]; //pay attention to n-1
+
+	numbersGy[0] = content;
+
+	for(int i=0; i<n; i++) acc += numbersGy[i];
+
+	return acc/n;
+}
+
+float mvGz(float content, const int n)
+{
+	float acc = 0;
+
+	static float  numbersGz[numberOfIterations];
+
+	for(int i= n-1; i>0; i--) numbersGz[i] = numbersGz[i-1]; //pay attention to n-1
+
+	numbersGz[0] = content;
+
+	for(int i=0; i<n; i++) acc += numbersGz[i];
+
+	return acc/n;
+}
+
+//==========MCU==========//
+
+void invertLed(void)
+{
+	HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+	HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
@@ -286,9 +394,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 		updateDisplay();
 
-		HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
-		HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
-
+		invertLed();
 	}
 }
 
@@ -346,14 +452,10 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-/*
-	MPU6050_Read_Accel();
-	MPU6050_Read_Gyro();
 
-	updateDisplay();
 
-	HAL_Delay(100);
-*/
+	HAL_Delay(1);
+
   }
   /* USER CODE END 3 */
 }
