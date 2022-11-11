@@ -24,7 +24,6 @@
 
 #include <stdio.h>
 #include <string.h>
-//#include <stdlib.h>
 
 //#include "usbd_cdc_if.h"
 
@@ -66,14 +65,22 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 
+CAN_HandleTypeDef hcan1;
+
 I2C_HandleTypeDef hi2c1;
 
+TIM_HandleTypeDef htim13;
 TIM_HandleTypeDef htim14;
 
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+
+//==========GPS==========//
+#define GPS_DEBUG	0
+#define	GPS_USART	&huart2
+#define GPSBUFSIZE  128       // GPS buffer size
 
 /* USER CODE END PV */
 
@@ -85,12 +92,23 @@ static void MX_ADC1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM14_Init(void);
+static void MX_CAN1_Init(void);
+static void MX_TIM13_Init(void);
 /* USER CODE BEGIN PFP */
 
 //==========ACELEROMETRO==========//
 void MPU6050_Init	 	(void);
 void MPU6050_Read_Gyro  (void);
 void MPU6050_Read_Accel (void);
+
+//==========GPS==========//
+void GPS_Init();
+void GSP_USBPrint(char *data);
+void GPS_print_val(char *data, int value);
+void GPS_UART_CallBack();
+int GPS_validate(char *nmeastr);
+void GPS_parse(char *GPSstrParse);
+float GPS_nmea_to_dec(float deg_coord, char nsew);
 
 //==========TEMP==========//
 float ADC_Select_CHTemp  (void);
@@ -116,10 +134,26 @@ float mvGz(float content, const int n);
 //==========MCU==========//
 void invertLed(void);
 
+//==========CAN==========//
+void sendCan();
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+//==========CAN==========//
+
+CAN_TxHeaderTypeDef txHeader;
+CAN_RxHeaderTypeDef rxHeader;
+
+uint8_t txData[8];
+uint8_t rxData[8];
+uint32_t txMailBox;
+
+uint8_t dataCheck = 0;
+
+//==========ACELEROMETRO==========//
 
 typedef struct acelerometro
 {
@@ -131,10 +165,65 @@ typedef struct acelerometro
 					gz;
 } acelerometro;
 
+typedef struct{
+
+    // calculated values
+    float dec_longitude;
+    float dec_latitude;
+    float altitude_ft;
+
+    // GGA - Global Positioning System Fixed Data
+    float nmea_longitude;
+    float nmea_latitude;
+    float utc_time;
+    char ns, ew;
+    int lock;
+    int satelites;
+    float hdop;
+    float msl_altitude;
+    char msl_units;
+
+    // RMC - Recommended Minimmum Specific GNS Data
+    char rmc_status;
+    float speed_k;
+    float course_d;
+    int date;
+
+    // GLL
+    char gll_status;
+
+    // VTG - Course over ground, ground speed
+    float course_t; // ground speed true
+    char course_t_unit;
+    float course_m; // magnetic
+    char course_m_unit;
+    char speed_k_unit;
+    float speed_km; // speek km/hr
+    char speed_km_unit;
+} GPS_t;
+
 volatile acelerometro MPU6050;
 volatile acelerometro average;
 
+//==========GPS==========//
 
+#if (GPS_DEBUG == 1)
+#include <usbd_cdc_if.h>
+#endif
+
+uint8_t rx_data = 0;
+uint8_t rx_buffer[GPSBUFSIZE];
+uint8_t rx_index = 0;
+
+GPS_t GPS;
+
+#if (GPS_DEBUG == 1)
+void GPS_print(char *data){
+	char buf[GPSBUFSIZE] = {0,};
+	sprintf(buf, "%s\n", data);
+	CDC_Transmit_FS((unsigned char *) buf, (uint16_t) strlen(buf));
+}
+#endif
 
 //==========ACELEROMETRO==========//
 
@@ -211,6 +300,103 @@ void MPU6050_Read_Gyro  (void)
 	//average.gz = mvGy(MPU6050.gz, numberOfIterations);
 
 }
+
+//==========GPS==========//
+
+void GPS_Init()
+{
+	HAL_UART_Receive_IT(GPS_USART, &rx_data, 1);
+}
+
+void GPS_UART_CallBack(){
+	if (rx_data != '\n' && rx_index < sizeof(rx_buffer)) {
+		rx_buffer[rx_index++] = rx_data;
+	} else {
+
+		#if (GPS_DEBUG == 1)
+		GPS_print((char*)rx_buffer);
+		#endif
+
+		if(GPS_validate((char*) rx_buffer))
+			GPS_parse((char*) rx_buffer);
+		rx_index = 0;
+		memset(rx_buffer, 0, sizeof(rx_buffer));
+	}
+	HAL_UART_Receive_IT(GPS_USART, &rx_data, 1);
+}
+
+int GPS_validate(char *nmeastr){
+    char check[3];
+    char checkcalcstr[3];
+    int i;
+    int calculated_check;
+
+    i=0;
+    calculated_check=0;
+
+    // check to ensure that the string starts with a $
+    if(nmeastr[i] == '$')
+        i++;
+    else
+        return 0;
+
+    //No NULL reached, 75 char largest possible NMEA message, no '*' reached
+    while((nmeastr[i] != 0) && (nmeastr[i] != '*') && (i < 75)){
+        calculated_check ^= nmeastr[i];// calculate the checksum
+        i++;
+    }
+
+    if(i >= 75){
+        return 0;// the string was too long so return an error
+    }
+
+    if (nmeastr[i] == '*'){
+        check[0] = nmeastr[i+1];    //put hex chars in check string
+        check[1] = nmeastr[i+2];
+        check[2] = 0;
+    }
+    else
+        return 0;// no checksum separator found there for invalid
+
+    sprintf(checkcalcstr,"%02X",calculated_check);
+    return((checkcalcstr[0] == check[0])
+        && (checkcalcstr[1] == check[1])) ? 1 : 0 ;
+}
+
+void GPS_parse(char *GPSstrParse){
+    if(!strncmp(GPSstrParse, "$GPGGA", 6)){
+    	if (sscanf(GPSstrParse, "$GPGGA,%f,%f,%c,%f,%c,%d,%d,%f,%f,%c", &GPS.utc_time, &GPS.nmea_latitude, &GPS.ns, &GPS.nmea_longitude, &GPS.ew, &GPS.lock, &GPS.satelites, &GPS.hdop, &GPS.msl_altitude, &GPS.msl_units) >= 1){
+    		GPS.dec_latitude = GPS_nmea_to_dec(GPS.nmea_latitude, GPS.ns);
+    		GPS.dec_longitude = GPS_nmea_to_dec(GPS.nmea_longitude, GPS.ew);
+    		return;
+    	}
+    }
+    else if (!strncmp(GPSstrParse, "$GPRMC", 6)){
+    	if(sscanf(GPSstrParse, "$GPRMC,%f,%f,%c,%f,%c,%f,%f,%d", &GPS.utc_time, &GPS.nmea_latitude, &GPS.ns, &GPS.nmea_longitude, &GPS.ew, &GPS.speed_k, &GPS.course_d, &GPS.date) >= 1)
+    		return;
+
+    }
+    else if (!strncmp(GPSstrParse, "$GPGLL", 6)){
+        if(sscanf(GPSstrParse, "$GPGLL,%f,%c,%f,%c,%f,%c", &GPS.nmea_latitude, &GPS.ns, &GPS.nmea_longitude, &GPS.ew, &GPS.utc_time, &GPS.gll_status) >= 1)
+            return;
+    }
+    else if (!strncmp(GPSstrParse, "$GPVTG", 6)){
+        if(sscanf(GPSstrParse, "$GPVTG,%f,%c,%f,%c,%f,%c,%f,%c", &GPS.course_t, &GPS.course_t_unit, &GPS.course_m, &GPS.course_m_unit, &GPS.speed_k, &GPS.speed_k_unit, &GPS.speed_km, &GPS.speed_km_unit) >= 1)
+            return;
+    }
+}
+
+float GPS_nmea_to_dec(float deg_coord, char nsew) {
+    int degree = (int)(deg_coord/100);
+    float minutes = deg_coord - degree*100;
+    float dec_deg = minutes / 60;
+    float decimal = degree + dec_deg;
+    if (nsew == 'S' || nsew == 'W') { // return negative
+        decimal *= -1;
+    }
+    return decimal;
+}
+
 
 //==========NEXTION==========//
 
@@ -381,7 +567,6 @@ float mvGz(float content, const int n)
 
 void invertLed(void)
 {
-	HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
 	HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
 }
 
@@ -396,8 +581,38 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 		invertLed();
 	}
+
+	if(htim==&htim13)
+	{
+		sendCan();
+	}
 }
 
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+	if(huart == &huart2) GPS_UART_CallBack();
+}
+
+//==========CAN==========//
+
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+{
+	HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rxHeader, rxData);
+	dataCheck = 1;
+}
+
+void sendCan()
+{
+	txData[0] = 4;
+
+	HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+	HAL_CAN_AddTxMessage(&hcan1, &txHeader, txData, &txMailBox);
+
+	/*
+	 * CANTX - PA12
+	 * CANRX - PA11
+	 */
+}
 /* USER CODE END 0 */
 
 /**
@@ -433,29 +648,41 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   MX_TIM14_Init();
+  MX_CAN1_Init();
+  MX_TIM13_Init();
   /* USER CODE BEGIN 2 */
 
   MPU6050_Init();
+
+  GPS_Init();
+
   HAL_TIM_Base_Start_IT(&htim14);
+  HAL_TIM_Base_Start_IT(&htim13);
+
+  HAL_CAN_Start(&hcan1);
+
+  HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
+
+  txHeader.DLC 		= 1;
+  txHeader.ExtId 	= 0;
+  txHeader.IDE 		= CAN_ID_STD;
+  txHeader.RTR 		= CAN_RTR_DATA;
+  txHeader.StdId 	= 0x407; //sender ID
+  txHeader.TransmitGlobalTime = DISABLE;
+
+  //HAL_GPIO_WritePin(GPIOF, LED1_Pin|LED2_Pin, GPIO_PIN_SET);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 
-  //vTaskStartScheduler();
-
-
-
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-
-
 	HAL_Delay(1);
-
   }
   /* USER CODE END 3 */
 }
@@ -558,6 +785,58 @@ static void MX_ADC1_Init(void)
 }
 
 /**
+  * @brief CAN1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CAN1_Init(void)
+{
+
+  /* USER CODE BEGIN CAN1_Init 0 */
+
+  /* USER CODE END CAN1_Init 0 */
+
+  /* USER CODE BEGIN CAN1_Init 1 */
+
+  /* USER CODE END CAN1_Init 1 */
+  hcan1.Instance = CAN1;
+  hcan1.Init.Prescaler = 6;
+  hcan1.Init.Mode = CAN_MODE_NORMAL;
+  hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
+  hcan1.Init.TimeSeg1 = CAN_BS1_6TQ;
+  hcan1.Init.TimeSeg2 = CAN_BS2_7TQ;
+  hcan1.Init.TimeTriggeredMode = DISABLE;
+  hcan1.Init.AutoBusOff = DISABLE;
+  hcan1.Init.AutoWakeUp = DISABLE;
+  hcan1.Init.AutoRetransmission = DISABLE;
+  hcan1.Init.ReceiveFifoLocked = DISABLE;
+  hcan1.Init.TransmitFifoPriority = DISABLE;
+  if (HAL_CAN_Init(&hcan1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CAN1_Init 2 */
+
+  CAN_FilterTypeDef canfilterconfig;
+
+  canfilterconfig.FilterActivation		=	CAN_FILTER_ENABLE;
+  canfilterconfig.FilterBank			=	18;
+  canfilterconfig.FilterFIFOAssignment	= 	CAN_FILTER_FIFO0;
+  canfilterconfig.FilterIdHigh			=	0x407<<5;//0x407<<5;//address that will be let to pass
+  canfilterconfig.FilterIdLow			=	0x0000;
+  canfilterconfig.FilterMaskIdHigh		=	0x407<<5;//0x407<<5;
+  canfilterconfig.FilterMaskIdLow		=	0x0000;
+  canfilterconfig.FilterMode			=	CAN_FILTERMODE_IDMASK;
+  canfilterconfig.FilterScale			=	CAN_FILTERSCALE_32BIT;
+  canfilterconfig.SlaveStartFilterBank	=	20;//20;
+
+  HAL_CAN_ConfigFilter(&hcan1, &canfilterconfig);
+
+  /* USER CODE END CAN1_Init 2 */
+
+}
+
+/**
   * @brief I2C1 Initialization Function
   * @param None
   * @retval None
@@ -588,6 +867,37 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief TIM13 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM13_Init(void)
+{
+
+  /* USER CODE BEGIN TIM13_Init 0 */
+
+  /* USER CODE END TIM13_Init 0 */
+
+  /* USER CODE BEGIN TIM13_Init 1 */
+
+  /* USER CODE END TIM13_Init 1 */
+  htim13.Instance = TIM13;
+  htim13.Init.Prescaler = 16800-1;
+  htim13.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim13.Init.Period = 5000-1;
+  htim13.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim13.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim13) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM13_Init 2 */
+
+  /* USER CODE END TIM13_Init 2 */
 
 }
 
