@@ -1,2 +1,2 @@
 # Projeto-LEDA
-Projeto LEDA com Renesas S7G2 SK
+Primeira versão feita com STM32F407ZGT6, I2C, UART e CAN bus 
