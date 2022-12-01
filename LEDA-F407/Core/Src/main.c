@@ -432,18 +432,20 @@ void updateDisplay(void)
 	Nextion_Sendfloat("ay", average.ay);
 	Nextion_Sendfloat("az", average.az);
 
-	Nextion_Sendfloat("gx", MPU6050.gx);
-	Nextion_Sendfloat("gy", MPU6050.gy);
-	Nextion_Sendfloat("gz", MPU6050.gz);
+	Nextion_Sendfloat("gx", MPU6050.gx/10);
+	Nextion_Sendfloat("gy", MPU6050.gy/10);
+	Nextion_Sendfloat("gz", MPU6050.gz/10);
 
 	//Nextion_Sendfloat("gx", average.gx);
 	//Nextion_Sendfloat("gy", average.gy);
 	//Nextion_Sendfloat("gz", average.gz);
 
-	Nextion_SendInt("lat", GPS.dec_latitude);
-	Nextion_SendInt("long", GPS.dec_longitude);
+	Nextion_SendString("lat", "-19,92449");
+	Nextion_SendString("long","-43,99313");
 
 	Nextion_Sendfloat("temp", ADC_Select_CHTemp());
+
+
 }
 
 //==========TEMP==========//
@@ -601,16 +603,18 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
 	HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rxHeader, rxData);
+	Nextion_SendString("cam", "LED sinc via CAN");
 	dataCheck = 1;
 }
 
 void sendCan()
 {
-	txData[0] = 4;
+	txData[0] = 6;
 
 	HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
 	HAL_CAN_AddTxMessage(&hcan1, &txHeader, txData, &txMailBox);
 
+	Nextion_SendString("cam", "Mensagem enviada CAN");
 	/*
 	 * CANTX - PA12
 	 * CANRX - PA11
@@ -657,7 +661,7 @@ int main(void)
 
   MPU6050_Init();
 
-  GPS_Init();
+  //GPS_Init();
 
   HAL_TIM_Base_Start_IT(&htim14);
   HAL_TIM_Base_Start_IT(&htim13);
@@ -804,7 +808,7 @@ static void MX_CAN1_Init(void)
   /* USER CODE END CAN1_Init 1 */
   hcan1.Instance = CAN1;
   hcan1.Init.Prescaler = 6;
-  hcan1.Init.Mode = CAN_MODE_NORMAL;
+  hcan1.Init.Mode = CAN_MODE_LOOPBACK;
   hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
   hcan1.Init.TimeSeg1 = CAN_BS1_6TQ;
   hcan1.Init.TimeSeg2 = CAN_BS2_7TQ;
@@ -891,7 +895,7 @@ static void MX_TIM13_Init(void)
   htim13.Instance = TIM13;
   htim13.Init.Prescaler = 16800-1;
   htim13.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim13.Init.Period = 5000-1;
+  htim13.Init.Period = 10000-1;
   htim13.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim13.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim13) != HAL_OK)

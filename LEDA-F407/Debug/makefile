@@ -61,7 +61,7 @@ main-build: LEDA-F407.elf secondary-outputs
 
 # Tool invocations
 LEDA-F407.elf LEDA-F407.map: $(OBJS) $(USER_OBJS) /home/icaro/STM32CubeIDE/workspace_1.10.1/Projeto-LEDA/LEDA-F407/STM32F407ZGTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "LEDA-F407.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"/home/icaro/STM32CubeIDE/workspace_1.10.1/Projeto-LEDA/LEDA-F407/STM32F407ZGTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="LEDA-F407.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -Wl,--start-group -lc -lm -Wl,--end-group
+	arm-none-eabi-gcc -o "LEDA-F407.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"/home/icaro/STM32CubeIDE/workspace_1.10.1/Projeto-LEDA/LEDA-F407/STM32F407ZGTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="LEDA-F407.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -u _scanf_float -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
