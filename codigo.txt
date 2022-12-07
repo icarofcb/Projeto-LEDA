@@ -1,0 +1,552 @@
+/***********************************************************************************************************************
+ * Copyright [2015-2017] Renesas Electronics Corporation and/or its licensors. All Rights Reserved.
+ * 
+ * This file is part of Renesas SynergyTM Software Package (SSP)
+ *
+ * The contents of this file (the "contents") are proprietary and confidential to Renesas Electronics Corporation
+ * and/or its licensors ("Renesas") and subject to statutory and contractual protections.
+ *
+ * This file is subject to a Renesas SSP license agreement. Unless otherwise agreed in an SSP license agreement with
+ * Renesas: 1) you may not use, copy, modify, distribute, display, or perform the contents; 2) you may not use any name
+ * or mark of Renesas for advertising or publicity purposes or in connection with your use of the contents; 3) RENESAS
+ * MAKES NO WARRANTY OR REPRESENTATIONS ABOUT THE SUITABILITY OF THE CONTENTS FOR ANY PURPOSE; THE CONTENTS ARE PROVIDED
+ * "AS IS" WITHOUT ANY EXPRESS OR IMPLIED WARRANTY, INCLUDING THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+ * PARTICULAR PURPOSE, AND NON-INFRINGEMENT; AND 4) RENESAS SHALL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, SPECIAL, OR
+ * CONSEQUENTIAL DAMAGES, INCLUDING DAMAGES RESULTING FROM LOSS OF USE, DATA, OR PROJECTS, WHETHER IN AN ACTION OF
+ * CONTRACT OR TORT, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE CONTENTS. Third-party contents
+ * included in this file may be subject to different terms.
+ **********************************************************************************************************************/
+/***********************************************************************************************************************
+* File Name    : hal_entry.c
+* Description  : This is a very simple example application that blinks all LEDs on a board.
+***********************************************************************************************************************/
+
+#include "hal_data.h"
+
+#include <stdio.h>
+#include <string.h>
+
+char bufGlobal[64];
+
+
+//==========ACELEROMETRO==========//
+// endereço dos registradores do acelerometro MPU6050
+
+uint8_t MPU6050_ADDR        = 0xD0;
+uint8_t SMPLRT_DIV_REG      = 0x19;
+uint8_t GYRO_CONFIG_REG     = 0x1B;
+uint8_t ACCEL_CONFIG_REG    = 0x1C;
+uint8_t ACCEL_XOUT_H_REG    = 0x3B;
+uint8_t TEMP_OUT_H_REG      = 0x41;
+uint8_t GYRO_XOUT_H_REG     = 0x43;
+uint8_t PWR_MGMT_1_REG      = 0x6B;
+uint8_t WHO_AM_I_REG        = 0x75;
+
+//==========CAN==========//
+
+void sendCan(void);
+
+//==========MATH==========//
+
+#define numberOfIterations 10 //how many times moving average will be performed
+
+//==========GPS==========//
+
+#define GPS_DEBUG   0
+#define GPS_USART   &huart2
+#define GPSBUFSIZE  128       // GPS buffer size
+
+//==========ACELEROMETRO==========//
+
+void MPU6050_Init       (void);
+void MPU6050_Read_Gyro  (void);
+void MPU6050_Read_Accel (void);
+
+//==========NEXTION==========//
+
+void Nextion_SendString (char *ID,char *string);
+void Nextion_SendInt    (char *ID,int var);
+void Nextion_Sendfloat  (char *ID,float var);
+
+//==========UART==========//
+
+void clearBuffer(void);
+
+//==========MCU==========//
+
+void invertLed(void);
+
+//==========CAN==========//
+
+void sendCan();
+
+//==========OPERATION==========//
+
+void updateDisplay(void);
+
+//==========MATH==========//
+
+float mvAx(float content, const int n);
+float mvAy(float content, const int n);
+float mvAz(float content, const int n);
+
+float mvGx(float content, const int n);
+float mvGy(float content, const int n);
+float mvGz(float content, const int n);
+
+
+//==========ACELEROMETRO==========//
+
+typedef struct acelerometro
+{
+    volatile float  ax,
+                    ay,
+                    az,
+                    gx,
+                    gy,
+                    gz;
+} acelerometro;
+
+volatile acelerometro MPU6050;
+volatile acelerometro average;
+
+//==========GPS==========//
+
+typedef struct{
+
+    // calculated values
+    float dec_longitude;
+    float dec_latitude;
+    float altitude_ft;
+
+    // GGA - Global Positioning System Fixed Data
+    float nmea_longitude;
+    float nmea_latitude;
+    float utc_time;
+    char ns, ew;
+    int lock;
+    int satelites;
+    float hdop;
+    float msl_altitude;
+    char msl_units;
+
+    // RMC - Recommended Minimmum Specific GNS Data
+    char rmc_status;
+    float speed_k;
+    float course_d;
+    int date;
+
+    // GLL
+    char gll_status;
+
+    // VTG - Course over ground, ground speed
+    float course_t; // ground speed true
+    char course_t_unit;
+    float course_m; // magnetic
+    char course_m_unit;
+    char speed_k_unit;
+    float speed_km; // speek km/hr
+    char speed_km_unit;
+} GPS_t;
+
+
+#if (GPS_DEBUG == 1)
+#include <usbd_cdc_if.h>
+#endif
+
+uint8_t rx_data = 0;
+uint8_t rx_buffer[GPSBUFSIZE];
+uint8_t rx_index = 0;
+
+GPS_t GPS;
+
+#if (GPS_DEBUG == 1)
+void GPS_print(char *data){
+    char buf[GPSBUFSIZE] = {0,};
+    sprintf(buf, "%s\n", data);
+    CDC_Transmit_FS((unsigned char *) buf, (uint16_t) strlen(buf));
+}
+#endif
+
+//==========ACELEROMETRO==========//
+
+void MPU6050_Init(void) // inicia o acelerometro e configura suas escalas
+{
+    uint8_t check;
+    uint8_t Data;
+
+    g_i2c.p_api->write(g_i2c.p_ctrl,(uint8_t *)&WHO_AM_I_REG,sizeof(WHO_AM_I_REG),0);
+    g_i2c.p_api->read(g_i2c.p_ctrl,(uint8_t*)&check,sizeof(check),0);
+
+    //HAL_I2C_Mem_Read (&hi2c1, MPU6050_ADDR,WHO_AM_I_REG,1, &check, 1, 1000);
+
+    if (check == 104)  // 0x68
+    {
+        Data = 0;
+        g_i2c.p_api->write(g_i2c.p_ctrl,(uint8_t *)&PWR_MGMT_1_REG,sizeof(PWR_MGMT_1_REG),1);
+        g_i2c.p_api->write(g_i2c.p_ctrl,(uint8_t *)&Data,sizeof(Data),0);
+        //HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, PWR_MGMT_1_REG, 1,&Data, 1, 1000);
+
+        Data = 0x07;
+        g_i2c.p_api->write(g_i2c.p_ctrl,(uint8_t *)&SMPLRT_DIV_REG,sizeof(SMPLRT_DIV_REG),1);
+        g_i2c.p_api->write(g_i2c.p_ctrl,(uint8_t *)&Data,sizeof(Data),0);
+        //HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, SMPLRT_DIV_REG, 1, &Data, 1, 1000);
+
+        Data = 0x00;
+        g_i2c.p_api->write(g_i2c.p_ctrl,(uint8_t *)&ACCEL_CONFIG_REG,sizeof(ACCEL_CONFIG_REG),1);
+        g_i2c.p_api->write(g_i2c.p_ctrl,(uint8_t *)&Data,sizeof(Data),0);
+        //HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, ACCEL_CONFIG_REG, 1, &Data, 1, 1000);
+
+        Data = 0x00;
+        g_i2c.p_api->write(g_i2c.p_ctrl,(uint8_t *)&GYRO_CONFIG_REG,sizeof(GYRO_CONFIG_REG),1);
+        g_i2c.p_api->write(g_i2c.p_ctrl,(uint8_t *)&Data,sizeof(Data),0);
+        //HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, GYRO_CONFIG_REG, 1, &Data, 1, 1000);
+    }
+
+}
+
+
+void MPU6050_Read_Accel (void)
+{
+    uint8_t Rec_Data[6];
+
+    int16_t Accel_X_RAW = 0;
+    int16_t Accel_Y_RAW = 0;
+    int16_t Accel_Z_RAW = 0;
+
+    g_i2c.p_api->write(g_i2c.p_ctrl,(uint8_t *)&ACCEL_XOUT_H_REG,sizeof(ACCEL_XOUT_H_REG),0);
+    g_i2c.p_api->read(g_i2c.p_ctrl,(uint8_t *)&Rec_Data,6,0);
+    //g_i2c.p_api->read(g_i2c.p_ctrl,(uint8_t *)&ACCEL_XOUT_H_REG,Rec_Data,0);
+
+    //HAL_I2C_Mem_Read (&hi2c1, MPU6050_ADDR, ACCEL_XOUT_H_REG, 1, Rec_Data, 6, 1000);
+
+    Accel_X_RAW = (int16_t)(Rec_Data[0] << 8 | Rec_Data [1]);
+    Accel_Y_RAW = (int16_t)(Rec_Data[2] << 8 | Rec_Data [3]);
+    Accel_Z_RAW = (int16_t)(Rec_Data[4] << 8 | Rec_Data [5]);
+
+    MPU6050.ax = ((float)Accel_X_RAW/(float)16384.0)*(float)10;
+    MPU6050.ay = ((float)Accel_Y_RAW/(float)16384.0)*(float)10;
+    MPU6050.az = ((float)Accel_Z_RAW/(float)16384.0)*(float)10;
+
+    average.ax = mvAx(MPU6050.ax, numberOfIterations);
+    average.ay = mvAy(MPU6050.ay, numberOfIterations);
+    average.az = mvAy(MPU6050.az, numberOfIterations);
+
+}
+
+
+void MPU6050_Read_Gyro  (void)
+{
+    uint8_t Rec_Data[6];
+
+    int16_t Gyro_X_RAW = 0;
+    int16_t Gyro_Y_RAW = 0;
+    int16_t Gyro_Z_RAW = 0;
+
+    g_i2c.p_api->write(g_i2c.p_ctrl,(uint8_t *)&GYRO_XOUT_H_REG,1,0);
+    g_i2c.p_api->read(g_i2c.p_ctrl,(uint8_t *)&Rec_Data,6,0);
+
+    //g_i2c.p_api->read(g_i2c.p_ctrl,(uint8_t *)&GYRO_XOUT_H_REG,Rec_Data,0);
+    //HAL_I2C_Mem_Read (&hi2c1, MPU6050_ADDR, GYRO_XOUT_H_REG, 1, Rec_Data, 6, 1000);
+
+    Gyro_X_RAW = (int16_t)(Rec_Data[0] << 8 | Rec_Data [1]);
+    Gyro_Y_RAW = (int16_t)(Rec_Data[2] << 8 | Rec_Data [3]);
+    Gyro_Z_RAW = (int16_t)(Rec_Data[4] << 8 | Rec_Data [5]);
+
+    MPU6050.gx = (float)Gyro_X_RAW/(float)131.0;
+    MPU6050.gy = (float)Gyro_Y_RAW/(float)131.0;
+    MPU6050.gz = (float)Gyro_Z_RAW/(float)131.0;
+
+}
+
+float mvAx(float content, const int n)
+{
+    float acc = 0;
+
+    static float  numbersAx[numberOfIterations];
+
+    for(int i= n-1; i>0; i--) numbersAx[i] = numbersAx[i-1]; //pay attention to n-1
+
+    numbersAx[0] = content;
+
+    for(int i=0; i<n; i++) acc += numbersAx[i];
+
+    return (float)acc/(float)n;
+}
+
+float mvAy(float content, const int n)
+{
+    float acc = 0;
+
+    static float  numbersAy[numberOfIterations];
+
+    for(int i= n-1; i>0; i--) numbersAy[i] = numbersAy[i-1]; //pay attention to n-1
+
+    numbersAy[0] = content;
+
+    for(int i=0; i<n; i++) acc += numbersAy[i];
+
+    return (float)acc/(float)n;
+}
+
+float mvAz(float content, const int n)
+{
+    float acc = 0;
+
+    static float  numbersAz[numberOfIterations];
+
+    for(int i= n-1; i>0; i--) numbersAz[i] = numbersAz[i-1]; //pay attention to n-1
+
+    numbersAz[0] = content;
+
+    for(int i=0; i<n; i++) acc += numbersAz[i];
+
+    return (float)acc/(float)n;
+}
+
+float mvGx(float content, const int n)
+{
+    float acc = 0;
+
+    static float  numbersGx[numberOfIterations];
+
+    for(int i= n-1; i>0; i--) numbersGx[i] = numbersGx[i-1]; //pay attention to n-1
+
+    numbersGx[0] = content;
+
+    for(int i=0; i<n; i++) acc += numbersGx[i];
+
+    return (float)acc/(float)n;
+}
+
+float mvGy(float content, const int n)
+{
+    float acc = 0;
+
+    static float  numbersGy[numberOfIterations];
+
+    for(int i= n-1; i>0; i--) numbersGy[i] = numbersGy[i-1]; //pay attention to n-1
+
+    numbersGy[0] = content;
+
+    for(int i=0; i<n; i++) acc += numbersGy[i];
+
+    return (float)acc/(float)n;
+}
+
+float mvGz(float content, const int n)
+{
+    float acc = 0;
+
+    static float  numbersGz[numberOfIterations];
+
+    for(int i= n-1; i>0; i--) numbersGz[i] = numbersGz[i-1]; //pay attention to n-1
+
+    numbersGz[0] = content;
+
+    for(int i=0; i<n; i++) acc += numbersGz[i];
+
+    return (float)acc/(float)n;
+}
+
+//==========NEXTION==========//
+
+void Nextion_SendString(char *ID,char *string)
+{
+    uint8_t Cmd_End[3] = {0xFF, 0xFF, 0xFF};
+
+    char buf[64];
+
+    sprintf(buf,"%s.txt=\"%s\"", ID, string);
+    sprintf(bufGlobal,buf);
+
+    g_uart0.p_api->write(g_uart0.p_ctrl, (uint8_t *)&buf, strlen( (char *)buf ) );          //envia informação desejada para a tela nextion e seu devido bloco de informação
+    g_uart0.p_api->write(g_uart0.p_ctrl, Cmd_End, 3 );
+
+}
+
+void Nextion_SendInt(char *ID,int var)
+{
+    char buf[64];
+    sprintf(buf,"%d",var);
+    Nextion_SendString(ID,buf);
+}
+
+void Nextion_Sendfloat(char *ID,float var)
+{
+    char buf[64];
+    sprintf(buf,"%.2f",var);
+    Nextion_SendString(ID,buf);
+}
+
+void updateDisplay(void)
+{
+    /*
+    Nextion_Sendfloat("ax", average.ax);
+    Nextion_Sendfloat("ay", average.ay);
+    Nextion_Sendfloat("az", average.az);
+
+    Nextion_Sendfloat("gx", MPU6050.gx);
+    Nextion_Sendfloat("gy", MPU6050.gy);
+    Nextion_Sendfloat("gz", MPU6050.gz);
+    */
+
+    int var = 15;
+
+    Nextion_SendInt("gx", var);
+    Nextion_SendInt("gy", var);
+    Nextion_SendInt("gz", var);
+
+    Nextion_SendString("lat","-19.924" );
+    Nextion_SendString("long", "-43.993");
+
+    Nextion_SendInt("temp", 30);
+
+    invertLed();
+}
+
+void invertLed(void)
+{
+    /* LED type structure */
+    bsp_leds_t leds;
+    /* LED state variable */
+    static ioport_level_t level = IOPORT_LEVEL_HIGH;
+
+    /* Get LED information for this board */
+    R_BSP_LedsGet(&leds);
+
+    /* If this board has no LEDs then trap here */
+    if (0 == leds.led_count)
+    {
+        while(1);   // There are no LEDs on this board
+    }
+
+    /* Determine the next state of the LEDs */
+    if(IOPORT_LEVEL_LOW == level)
+    {
+        level = IOPORT_LEVEL_HIGH;
+    }
+    else
+    {
+        level = IOPORT_LEVEL_LOW;
+    }
+
+    /* Update all board LEDs */
+    for(uint32_t i = 0; i < leds.led_count; i++)
+    {
+        g_ioport.p_api->pinWrite(leds.p_leds[i], level);
+    }
+}
+
+//==========UART==========//
+
+volatile uint8_t bufRx[16]      = "";           //buffer just to receive our info
+volatile uint8_t data[16]       = "";           //stores the last data received by buffer
+
+volatile uint8_t dataRxFinished = 0;            //flag to show that the last byte '\n' has been received
+
+volatile uint32_t j = 0;                        //a variable to be incremented to fill the buffer
+
+void user_uart_callback(uart_callback_args_t *p_args)
+{
+
+    if(!dataRxFinished)
+    {
+        if(UART_EVENT_RX_CHAR==p_args->event)
+        {
+            bufRx[j] = (uint8_t) p_args->data;  //stores the char received on the buffer
+            j++;                                //increments the buffer address
+        }
+    }
+
+}
+
+void clearBuffer(void)
+{
+    strcpy((char *)data, (char *)bufRx);
+    j = 0;
+    memset((char *)bufRx, 0,sizeof(bufRx));
+}
+
+#define WAIT_TIME                       (5000U)            //wait time value
+#define CAN_DESTINATION_MAILBOX_3       (3U)               //destination mail box number
+#define CAN_MAILBOX_NUMBER_0            (0U)               //mail box number
+#define CAN_FRAME_TRANSMIT_DATA_BYTES   (8U)               //data length
+#define ZERO                            (0U)
+#define NULL_CHAR                       ('\0')
+
+static can_frame_t g_can_tx_frame = {0x00};      //CAN transmit frame
+//static can_frame_t g_can_rx_frame = {0x00};      //CAN receive frame
+
+void sendCan(void)
+{
+    uint8_t buf [8] = "23";
+
+    g_can_tx_frame.id = CAN_DESTINATION_MAILBOX_3;
+    g_can_tx_frame.type = CAN_FRAME_TYPE_DATA;
+    g_can_tx_frame.data_length_code = CAN_FRAME_TRANSMIT_DATA_BYTES;
+
+
+    memcpy((uint8_t*)&g_can_tx_frame.data[ZERO], (uint8_t*)&buf, CAN_FRAME_TRANSMIT_DATA_BYTES);
+
+
+    g_can0.p_api->write (g_can0.p_ctrl, 0, &g_can_tx_frame);
+}
+
+void user_can_callback(can_callback_args_t *p_args)
+{
+    SSP_PARAMETER_NOT_USED(p_args);
+}
+
+/*******************************************************************************************************************//**
+ * @brief  Blinky example application
+ *
+ * Blinks all leds at a rate of 1 second using the software delay function provided by the BSP.
+ * Only references two other modules including the BSP, IOPORT.
+ *
+ **********************************************************************************************************************/
+void hal_entry(void) {
+
+    can_mode_t mode = CAN_MODE_LOOPBACK_INTERNAL;
+
+    g_can0.p_api->open(g_can0.p_ctrl, g_can0.p_cfg);
+
+    g_can0.p_api->control(g_can0.p_ctrl, CAN_COMMAND_MODE_SWITCH, &mode);
+
+    g_i2c.p_api->open(g_i2c.p_ctrl, g_i2c.p_cfg);
+
+    MPU6050_Init();
+
+    g_uart0.p_api->open(g_uart0.p_ctrl, g_uart0.p_cfg);                             //initialize uart 0
+
+    uint8_t countDelay = 0;                                                         //variable to work as a non blocking delay
+
+        while(1)
+        {
+            if(countDelay>5)                                                            //each 500mS toggles Yellow LED
+            {
+                countDelay = 0;
+
+                MPU6050_Read_Accel();
+                MPU6050_Read_Accel();
+                updateDisplay();
+                sendCan();
+
+            }else countDelay++;
+
+            ////////////////////////////////
+
+            if(strchr((char *)bufRx, '\n') != NULL)                                     //function to check if info has finished being received
+            {
+                dataRxFinished = 1;
+
+                clearBuffer();                                                          //clears the buffer and saves the data
+
+            }
+
+            ////////////////////////////////
+
+            R_BSP_SoftwareDelay(100, BSP_DELAY_UNITS_MILLISECONDS);                     //small value delay
+
+        }
+}
